@@ -11,3 +11,6 @@ dist-ssr
 
 # local preview helper
 .claude/
+
+# Local Netlify folder
+.netlify

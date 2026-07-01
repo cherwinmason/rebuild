@@ -1305,7 +1305,45 @@ function AchievementsTab({ data }) {
 // ---------- COACH CHAT ----------
 function CoachTab({ data, setData }) {
   const [input, setInput] = useState('');
+  const [sending, setSending] = useState(false);
   const messages = data.chatMessages || [];
+  const scrollRef = useRef(null);
+
+  // Personal stats sent to the coach so it can reference real numbers
+  const stats = useMemo(() => {
+    const { weights = [], workouts = [], profile = {} } = data;
+    const currentWeight = weights.length ? weights[weights.length - 1].weight : profile.startWeight;
+    const startWeight = weights.length ? weights[0].weight : profile.startWeight;
+    const monday = getMondayOfWeek(new Date());
+    const thisWeekWorkouts = workouts.filter(w => new Date(w.date) >= monday).length;
+    const weekCounts = {};
+    workouts.forEach(w => {
+      const k = getMondayOfWeek(w.date).toISOString().slice(0, 10);
+      weekCounts[k] = (weekCounts[k] || 0) + 1;
+    });
+    const weeks = Object.entries(weekCounts).sort((a, b) => b[0].localeCompare(a[0]));
+    let weekStreak = 0;
+    const cm = getMondayOfWeek(new Date()).toISOString().slice(0, 10);
+    for (const [date, c] of weeks) {
+      if (date === cm && c < 4) continue;
+      if (c >= 4) weekStreak++; else break;
+    }
+    const num = (v) => (typeof v === 'number' && !isNaN(v) ? Number(v.toFixed(1)) : null);
+    return {
+      startWeight: startWeight ?? null,
+      currentWeight: currentWeight ?? null,
+      targetWeight: profile.targetWeight ?? null,
+      weightLost: num((startWeight ?? 0) - (currentWeight ?? 0)),
+      toGo: num((currentWeight ?? 0) - (profile.targetWeight ?? 0)),
+      thisWeekWorkouts,
+      weekStreak,
+      totalWorkouts: workouts.length,
+    };
+  }, [data]);
+
+  useEffect(() => {
+    scrollRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages.length, sending]);
 
   const responses = {
     pull: 'Pull-ups are the most honest exercise. Right now they feel impossible. In 6 weeks they will feel easy. The path: band-assisted → negatives → 1 strict → more.',
@@ -1336,43 +1374,79 @@ function CoachTab({ data, setData }) {
     return responses.default;
   };
 
-  const send = () => {
-    if (!input.trim()) return;
-    const userMsg = { role: 'user', text: input.trim(), ts: Date.now() };
-    const reply = { role: 'coach', text: findResponse(input), ts: Date.now() + 1 };
-    setData({ ...data, chatMessages: [...messages, userMsg, reply] });
+  const send = async () => {
+    const text = input.trim();
+    if (!text || sending) return;
+    const userMsg = { role: 'user', text, ts: Date.now() };
+    const base = [...messages, userMsg];
+    setData(prev => ({ ...prev, chatMessages: base }));
     setInput('');
+    setSending(true);
+    try {
+      const res = await fetch('/.netlify/functions/coach', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: base, profile: data.profile, stats }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok || payload.error || !payload.reply) {
+        throw new Error(payload.error || 'Request failed');
+      }
+      const reply = { role: 'coach', text: payload.reply, ts: Date.now() + 1 };
+      setData(prev => ({ ...prev, chatMessages: [...base, reply] }));
+    } catch (e) {
+      // Graceful fallback: canned answer so the coach still responds offline
+      const reply = { role: 'coach', text: findResponse(text), ts: Date.now() + 1, offline: true };
+      setData(prev => ({ ...prev, chatMessages: [...base, reply] }));
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
     <div className="space-y-4">
       <div className="border-l-2 border-orange-500 pl-4">
-        <div className="text-[10px] tracking-[0.25em] text-orange-500 uppercase font-mono mb-1">Quick Q&A</div>
+        <div className="text-[10px] tracking-[0.25em] text-orange-500 uppercase font-mono mb-1">AI Coach</div>
         <h1 className="text-3xl font-bold text-white">Coach</h1>
-        <p className="text-zinc-500 text-sm mt-2">Simple answers, fast. For deep talks, message your real PT.</p>
+        <p className="text-zinc-500 text-sm mt-2">Your personal coach — knows your plan, weights, and streak. Ask anything.</p>
       </div>
 
       <Card className="p-3 border-orange-500/20 bg-orange-500/5">
         <div className="text-[10px] text-orange-300">
-          Quick coach for habit/training/food questions. Not a doctor. For medical/injury issues talk to a professional.
+          Coaches training, food, and habits using your real numbers. Not a doctor — for medical/injury issues talk to a professional.
         </div>
       </Card>
 
       <div className="space-y-3 min-h-[300px]">
         {messages.length === 0 && (
           <div className="text-center text-zinc-500 text-xs py-8">
-            Ask me about pull-ups, food, motivation, hawker, alcohol, sleep, plateaus, or missing days.
+            Ask me anything — a workout swap, what to eat at the hawker, why the scale stalled, or how to get back on track.
           </div>
         )}
         {messages.map(m => (
           <div key={m.ts} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] p-3 text-sm ${
+            <div className={`max-w-[80%] p-3 text-sm whitespace-pre-wrap ${
               m.role === 'user' ? 'bg-orange-500 text-black' : 'bg-zinc-900 border border-zinc-800 text-zinc-200'
             }`}>
               {m.text}
+              {m.offline && (
+                <div className="text-[9px] font-mono text-zinc-500 mt-2 not-italic">offline answer — AI coach unreachable</div>
+              )}
             </div>
           </div>
         ))}
+        {sending && (
+          <div className="flex justify-start">
+            <div className="bg-zinc-900 border border-zinc-800 text-zinc-400 p-3 text-sm">
+              <span className="inline-flex gap-1">
+                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse" />
+                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse [animation-delay:150ms]" />
+                <span className="w-1.5 h-1.5 bg-orange-500 rounded-full animate-pulse [animation-delay:300ms]" />
+              </span>
+            </div>
+          </div>
+        )}
+        <div ref={scrollRef} />
       </div>
 
       <div className="flex gap-2 sticky bottom-20 bg-black pt-2">
@@ -1380,10 +1454,11 @@ function CoachTab({ data, setData }) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && send()}
-          placeholder="Ask..."
-          className="flex-1 bg-zinc-950 border border-zinc-800 px-4 py-3 text-sm text-white outline-none focus:border-orange-500"
+          placeholder={sending ? 'Coach is thinking…' : 'Ask your coach...'}
+          disabled={sending}
+          className="flex-1 bg-zinc-950 border border-zinc-800 px-4 py-3 text-sm text-white outline-none focus:border-orange-500 disabled:opacity-50"
         />
-        <button onClick={send} className="bg-orange-500 text-black px-4 py-3"><Send size={16} /></button>
+        <button onClick={send} disabled={sending} className="bg-orange-500 text-black px-4 py-3 disabled:opacity-50"><Send size={16} /></button>
       </div>
     </div>
   );

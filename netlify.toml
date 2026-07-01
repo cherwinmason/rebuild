@@ -2,7 +2,12 @@
   command = "npm run build"
   publish = "dist"
 
-# SPA fallback so deep links resolve to the app shell
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# SPA fallback so deep links resolve to the app shell.
+# Function routes (/.netlify/functions/*) are served before this catch-all.
 [[redirects]]
   from = "/*"
   to = "/index.html"
